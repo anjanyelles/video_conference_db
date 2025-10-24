@@ -9,9 +9,17 @@ require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
+
+// Determine allowed origins based on environment
+const allowedOrigins = [
+  'http://localhost:5174',
+  'http://localhost:5173',
+  process.env.FRONTEND_URL // Add your deployed frontend URL in env vars
+].filter(Boolean);
+
 const io = socketIo(server, {
   cors: {
-    origin: "http://localhost:5174", // ✅ Allow your React app
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -21,12 +29,61 @@ const PORT = process.env.PORT || 5004;
 
 // Middleware
 app.use(cors({
-  origin: "http://localhost:5174",
+  origin: function(origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(null, true); // Allow all in production, or restrict as needed
+    }
+  },
   methods: ["GET", "POST", "PUT", "DELETE"],
   credentials: true
 }));
 
 app.use(express.json());
+
+// Root route - Health check
+app.get('/', (req, res) => {
+  res.json({
+    status: 'running',
+    message: 'Video Conference API Server',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      health: '/health',
+      auth: '/api/auth/login',
+      users: '/api/users',
+      departments: '/api/departments',
+      analytics: {
+        meetings: '/api/analytics/meetings',
+        activity: '/api/analytics/activity'
+      }
+    }
+  });
+});
+
+// Health check endpoint
+app.get('/health', async (req, res) => {
+  try {
+    // Test database connection
+    await pool.query('SELECT 1');
+    res.json({ 
+      status: 'healthy',
+      database: 'connected',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(503).json({ 
+      status: 'unhealthy',
+      database: 'disconnected',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
 // JWT Authentication Middleware
 const authenticateToken = (req, res, next) => {
@@ -93,7 +150,7 @@ app.post('/api/auth/login', async (req, res) => {
         department_id: user.department_id 
       },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN }
+      { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
     );
 
     res.json({
@@ -449,9 +506,30 @@ io.on('connection', (socket) => {
   });
 });
 
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ 
+    error: 'Not Found',
+    message: `Route ${req.method} ${req.url} not found`,
+    availableEndpoints: [
+      'GET /',
+      'GET /health',
+      'POST /api/auth/login',
+      'GET /api/users',
+      'GET /api/departments',
+      'GET /api/analytics/meetings',
+      'GET /api/analytics/activity'
+    ]
+  });
+});
+
 // Initialize database and start server
 initDB().then(() => {
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   });
+}).catch(err => {
+  console.error('Failed to initialize database:', err);
+  process.exit(1);
 });
